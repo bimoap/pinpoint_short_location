@@ -44,18 +44,18 @@ with st.sidebar:
     st.header("2. Voltage Drop Measurements")
     unit = st.radio("Voltage Unit", ["V", "mV"], horizontal=True)
 
+    measured_from = st.radio(
+        "Voltage Drop Measured From",
+        ["Start / Inner Tail", "Finish / Outer Tail"],
+        help="Select which tail of the coil your 0 V reference probe is connected to.",
+    )
+
     v_total = st.number_input(
         f"Total Layer Voltage Drop ({unit})",
         min_value=0.0001,
         value=10.0 if unit == "V" else 1000.0,
         step=0.1 if unit == "V" else 10.0,
         format="%.4f",
-    )
-
-    ref_lead = st.radio(
-        "0 V Reference Probe Location",
-        ["Inner Lead (Turn 1)", "Outer Lead (Turn N)"],
-        help="Select which end of the coil your negative/reference probe is connected to.",
     )
 
     v_target = st.number_input(
@@ -68,7 +68,7 @@ with st.sidebar:
     )
 
     winding_dir = st.radio(
-        "Visual Winding Direction (from Inner Lead)",
+        "Visual Winding Direction (from Start / Inner Tail)",
         ["Counter-Clockwise (CCW)", "Clockwise (CW)"],
         horizontal=True,
     )
@@ -101,7 +101,10 @@ v_per_mm = v_total / total_length_mm
 
 df[f"Turn Drop ({unit})"] = df["Turn Length (mm)"] * v_per_mm
 
-if ref_lead == "Inner Lead (Turn 1)":
+is_inner_ref = measured_from == "Start / Inner Tail"
+ref_short = "Inner Tail" if is_inner_ref else "Outer Tail"
+
+if is_inner_ref:
     df[f"Cum. Voltage Start ({unit})"] = df["Start Len Inner (mm)"] * v_per_mm
     df[f"Cum. Voltage End ({unit})"] = df["End Len Inner (mm)"] * v_per_mm
     dist_from_ref_mm = (v_target / v_total) * total_length_mm
@@ -132,8 +135,8 @@ dist_into_turn_inner_mm = dist_from_inner_mm - float(target_row["Start Len Inner
 frac_from_inner = dist_into_turn_inner_mm / turn_length_mm
 continuous_turn = (target_turn - 1) + frac_from_inner
 
-# Length from the last complete turn (relative to chosen reference lead)
-if ref_lead == "Inner Lead (Turn 1)":
+# Length from the last complete turn (relative to chosen tail)
+if is_inner_ref:
     dist_from_last_turn_mm = dist_into_turn_inner_mm
     completed_turns = target_turn - 1
     if abs(dist_from_last_turn_mm - turn_length_mm) < 1e-6:
@@ -162,7 +165,7 @@ row1_c1, row1_c2, row1_c3, row1_c4 = st.columns(4)
 row1_c1.metric(
     "Target Turn",
     f"Turn {target_turn} / {n_turns}",
-    f"{completed_turns} complete turns from ref lead",
+    f"{completed_turns} complete turns from {ref_short}",
 )
 row1_c2.metric(
     "From Last Complete Turn",
@@ -182,7 +185,7 @@ row1_c4.metric(
 
 row2_c1, row2_c2, row2_c3 = st.columns(3)
 row2_c1.metric(
-    "Total Distance from Ref Lead",
+    f"Total Distance from {ref_short}",
     f"{dist_from_ref_mm / 1000:.3f} m",
     f"{dist_from_ref_mm:,.1f} mm",
 )
@@ -213,8 +216,8 @@ with viz_col1:
     x_all = r_all * np.cos(theta_all)
     y_all = r_all * np.sin(theta_all)
 
-    # Highlighted path from reference lead to target
-    if ref_lead == "Inner Lead (Turn 1)":
+    # Highlighted path from chosen tail to target
+    if is_inner_ref:
         u_active = np.linspace(
             0, continuous_turn, max(2, int(continuous_turn * pts_per_turn) + 1)
         )
@@ -256,21 +259,21 @@ with viz_col1:
             y=y_act,
             mode="lines",
             line=dict(color="#1f77b4", width=3.2),
-            name=f"Measured Span (0 → {v_target:.3f} {unit})",
+            name=f"Measured Span from {ref_short} (0 → {v_target:.3f} {unit})",
             hoverinfo="skip",
         )
     )
 
-    # Inner & Outer lead markers
+    # Start / Inner & Finish / Outer tail markers
     fig_spiral.add_trace(
         go.Scatter(
             x=[r_inner, r_outer],
             y=[0, 0],
             mode="markers+text",
             marker=dict(size=9, color=["#2ca02c", "#9467bd"], symbol="circle"),
-            text=["Inner Lead (T1)", f"Outer Lead (T{n_turns})"],
+            text=["Start / Inner Tail (T1)", f"Finish / Outer Tail (T{n_turns})"],
             textposition=["middle left", "middle right"],
-            name="Coil Leads",
+            name="Coil Tails",
         )
     )
 
@@ -289,12 +292,13 @@ with viz_col1:
             name="Target Location",
             hovertemplate=(
                 f"<b>Target Location</b><br>"
+                f"Measured From: {measured_from}<br>"
                 f"Turn: {target_turn} ({frac_from_last_turn * 100:.1f}%)<br>"
                 f"Past Last Turn: {dist_from_last_turn_mm:,.1f} mm ({dist_from_last_turn_mm / 1000:.3f} m)<br>"
                 f"To Complete Turn: {dist_to_complete_turn_mm:,.1f} mm ({dist_to_complete_turn_mm / 1000:.3f} m)<br>"
                 f"Angle: {angle_from_last_turn_deg:.1f}°<br>"
                 f"Voltage Drop: {v_target:.4f} {unit}<br>"
-                f"Total Dist from Ref: {dist_from_ref_mm:,.1f} mm<extra></extra>"
+                f"Total Dist from {ref_short}: {dist_from_ref_mm:,.1f} mm<extra></extra>"
             ),
         )
     )
@@ -335,7 +339,7 @@ with viz_col2:
 
     fig_profile = go.Figure()
 
-    if ref_lead == "Inner Lead (Turn 1)":
+    if is_inner_ref:
         x_turns = [0] + df["Turn"].tolist()
         y_volts = [0.0] + df[f"Cum. Voltage End ({unit})"].tolist()
     else:
@@ -377,8 +381,8 @@ with viz_col2:
     )
 
     fig_profile.update_layout(
-        xaxis_title="Turn Number (Inner = 0 → Outer = N)",
-        yaxis_title=f"Voltage Drop from Ref Lead ({unit})",
+        xaxis_title="Turn Number (Start / Inner = 0 → Finish / Outer = N)",
+        yaxis_title=f"Voltage Drop from {ref_short} ({unit})",
         height=310,
         margin=dict(l=20, r=20, t=25, b=20),
         showlegend=False,
@@ -420,13 +424,13 @@ display_df = df[
         f"Cum. Voltage Start ({unit})",
         f"Cum. Voltage End ({unit})",
     ]
-].rename(columns={"End Len Inner (mm)": "Cum. Length from Inner (mm)"})
+].rename(columns={"End Len Inner (mm)": "Cum. Length from Inner Tail (mm)"})
 
 st.dataframe(
     display_df.style.format(
         {
             "Turn Length (mm)": "{:,.2f}",
-            "Cum. Length from Inner (mm)": "{:,.2f}",
+            "Cum. Length from Inner Tail (mm)": "{:,.2f}",
             f"Turn Drop ({unit})": "{:.4f}",
             f"Cum. Voltage Start ({unit})": "{:.4f}",
             f"Cum. Voltage End ({unit})": "{:.4f}",
