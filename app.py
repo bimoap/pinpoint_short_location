@@ -47,29 +47,32 @@ with st.sidebar:
     measured_from = st.radio(
         "Voltage Drop Measured From",
         ["Start / Inner Tail", "Finish / Outer Tail"],
+        index=1,
         help="Select which tail of the coil your 0 V reference probe is connected to.",
     )
 
     v_total = st.number_input(
         f"Total Layer Voltage Drop ({unit})",
         min_value=0.0001,
-        value=10.0 if unit == "V" else 1000.0,
-        step=0.1 if unit == "V" else 10.0,
+        value=0.1250 if unit == "V" else 125.0,
+        step=0.0001 if unit == "V" else 0.1,
         format="%.4f",
     )
 
+    default_v_target = 0.0124 if unit == "V" else 12.4
     v_target = st.number_input(
         f"Voltage Drop at Interested Location ({unit})",
         min_value=0.0,
         max_value=float(v_total),
-        value=min(float(v_total) * 0.42, float(v_total)),
-        step=0.05 if unit == "V" else 5.0,
+        value=min(default_v_target, float(v_total)),
+        step=0.0001 if unit == "V" else 0.1,
         format="%.4f",
     )
 
     winding_dir = st.radio(
         "Visual Winding Direction (from Start / Inner Tail)",
         ["Counter-Clockwise (CCW)", "Clockwise (CW)"],
+        index=1,
         horizontal=True,
     )
 
@@ -259,7 +262,7 @@ with viz_col1:
             y=y_act,
             mode="lines",
             line=dict(color="#1f77b4", width=3.2),
-            name=f"Measured Span from {ref_short} (0 → {v_target:.3f} {unit})",
+            name=f"Measured Span from {ref_short} (0 → {v_target:.4f} {unit})",
             hoverinfo="skip",
         )
     )
@@ -308,7 +311,7 @@ with viz_col1:
         y=y_t,
         text=(
             f"<b>Turn {target_turn}</b> (+{dist_from_last_turn_mm:,.0f} mm / -{dist_to_complete_turn_mm:,.0f} mm left)<br>"
-            f"{v_target:.3f} {unit} · {angle_from_last_turn_deg:.0f}°"
+            f"{v_target:.4f} {unit} · {angle_from_last_turn_deg:.0f}°"
         ),
         showarrow=True,
         arrowhead=2,
@@ -361,7 +364,7 @@ with viz_col2:
         y=v_target,
         line_dash="dash",
         line_color="#d62728",
-        annotation_text=f"{v_target:.3f} {unit}",
+        annotation_text=f"{v_target:.4f} {unit}",
     )
     fig_profile.add_vline(
         x=continuous_turn,
