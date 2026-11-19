@@ -39,6 +39,22 @@ with st.sidebar:
         value=25,
         step=1,
     )
+    inner_lead_mm = st.number_input(
+        "Start / Inner Tail Lead Length (mm)",
+        min_value=0,
+        value=0,
+        step=1,
+        format="%d",
+        help="Extra conductor length from the Start / Inner probe point to the start of Turn 1.",
+    )
+    outer_lead_mm = st.number_input(
+        "Finish / Outer Tail Lead Length (mm)",
+        min_value=0,
+        value=0,
+        step=1,
+        format="%d",
+        help="Extra conductor length from the end of Turn N to the Finish / Outer probe point.",
+    )
 
     st.divider()
     st.header("2. Voltage Drop Measurements")
@@ -93,13 +109,14 @@ for k in range(1, int(n_turns) + 1):
         {
             "Turn": k,
             "Turn Length (mm)": length_k,
-            "Start Len Inner (mm)": start_len,
-            "End Len Inner (mm)": cum_len,
+            "Start Len Winding (mm)": start_len,
+            "End Len Winding (mm)": cum_len,
         }
     )
 
 df = pd.DataFrame(rows)
-total_length_mm = df["End Len Inner (mm)"].iloc[-1]
+winding_length_mm = df["End Len Winding (mm)"].iloc[-1]
+total_length_mm = float(inner_lead_mm) + winding_length_mm + float(outer_lead_mm)
 v_per_mm = v_total / total_length_mm
 
 df[f"Turn Drop ({unit})"] = df["Turn Length (mm)"] * v_per_mm
@@ -108,89 +125,142 @@ is_inner_ref = measured_from == "Start / Inner Tail"
 ref_short = "Inner Tail" if is_inner_ref else "Outer Tail"
 
 if is_inner_ref:
-    df[f"Cum. Voltage Start ({unit})"] = df["Start Len Inner (mm)"] * v_per_mm
-    df[f"Cum. Voltage End ({unit})"] = df["End Len Inner (mm)"] * v_per_mm
-    dist_from_ref_mm = (v_target / v_total) * total_length_mm
-    dist_from_inner_mm = dist_from_ref_mm
-else:
     df[f"Cum. Voltage Start ({unit})"] = (
-        total_length_mm - df["End Len Inner (mm)"]
+        float(inner_lead_mm) + df["Start Len Winding (mm)"]
     ) * v_per_mm
     df[f"Cum. Voltage End ({unit})"] = (
-        total_length_mm - df["Start Len Inner (mm)"]
+        float(inner_lead_mm) + df["End Len Winding (mm)"]
     ) * v_per_mm
     dist_from_ref_mm = (v_target / v_total) * total_length_mm
-    dist_from_inner_mm = total_length_mm - dist_from_ref_mm
+    dist_from_inner_probe_mm = dist_from_ref_mm
+else:
+    df[f"Cum. Voltage Start ({unit})"] = (
+        float(outer_lead_mm) + winding_length_mm - df["End Len Winding (mm)"]
+    ) * v_per_mm
+    df[f"Cum. Voltage End ({unit})"] = (
+        float(outer_lead_mm) + winding_length_mm - df["Start Len Winding (mm)"]
+    ) * v_per_mm
+    dist_from_ref_mm = (v_target / v_total) * total_length_mm
+    dist_from_inner_probe_mm = total_length_mm - dist_from_ref_mm
 
 # Clamp floating point edge cases
-dist_from_inner_mm = max(0.0, min(total_length_mm, dist_from_inner_mm))
+dist_from_inner_probe_mm = max(0.0, min(total_length_mm, dist_from_inner_probe_mm))
+dist_in_winding_from_inner_mm = dist_from_inner_probe_mm - float(inner_lead_mm)
 
-# Locate exact turn and fractional position along that turn
-match_rows = df[
-    (df["Start Len Inner (mm)"] <= dist_from_inner_mm)
-    & (df["End Len Inner (mm)"] >= dist_from_inner_mm)
-]
-target_row = match_rows.iloc[0] if not match_rows.empty else df.iloc[-1]
-
-target_turn = int(target_row["Turn"])
-turn_length_mm = float(target_row["Turn Length (mm)"])
-dist_into_turn_inner_mm = dist_from_inner_mm - float(target_row["Start Len Inner (mm)"])
-frac_from_inner = dist_into_turn_inner_mm / turn_length_mm
-continuous_turn = (target_turn - 1) + frac_from_inner
-
-# Length from the last complete turn (relative to chosen tail)
-if is_inner_ref:
-    dist_from_last_turn_mm = dist_into_turn_inner_mm
-    completed_turns = target_turn - 1
-    if abs(dist_from_last_turn_mm - turn_length_mm) < 1e-6:
-        completed_turns = target_turn
-        dist_from_last_turn_mm = 0.0
-else:
-    dist_from_last_turn_mm = float(target_row["End Len Inner (mm)"]) - dist_from_inner_mm
-    completed_turns = int(n_turns) - target_turn
-    if abs(dist_from_last_turn_mm - turn_length_mm) < 1e-6:
-        completed_turns = int(n_turns) - target_turn + 1
-        dist_from_last_turn_mm = 0.0
-
-frac_from_last_turn = dist_from_last_turn_mm / turn_length_mm
-angle_from_last_turn_deg = frac_from_last_turn * 360.0
-
-# Remaining length from interested point to complete that turn
-if dist_from_last_turn_mm == 0.0:
+# Determine whether fault is on Inner Lead, Outer Lead, or inside Winding
+if dist_in_winding_from_inner_mm < -1e-6:
+    fault_zone = "inner_lead"
+    target_turn = None
+    continuous_turn = 0.0
+    lead_dist_from_winding_mm = -dist_in_winding_from_inner_mm
+    turn_length_mm = 0.0
+    dist_from_last_turn_mm = 0.0
     dist_to_complete_turn_mm = 0.0
+    frac_from_last_turn = 0.0
     rem_frac_in_turn = 0.0
+    angle_from_last_turn_deg = 0.0
+    completed_turns = 0 if is_inner_ref else int(n_turns)
+elif dist_in_winding_from_inner_mm > winding_length_mm + 1e-6:
+    fault_zone = "outer_lead"
+    target_turn = None
+    continuous_turn = float(n_turns)
+    lead_dist_from_winding_mm = dist_in_winding_from_inner_mm - winding_length_mm
+    turn_length_mm = 0.0
+    dist_from_last_turn_mm = 0.0
+    dist_to_complete_turn_mm = 0.0
+    frac_from_last_turn = 0.0
+    rem_frac_in_turn = 0.0
+    angle_from_last_turn_deg = 0.0
+    completed_turns = int(n_turns) if is_inner_ref else 0
 else:
-    dist_to_complete_turn_mm = turn_length_mm - dist_from_last_turn_mm
-    rem_frac_in_turn = 1.0 - frac_from_last_turn
+    fault_zone = "winding"
+    clamped_winding_mm = max(0.0, min(winding_length_mm, dist_in_winding_from_inner_mm))
+    match_rows = df[
+        (df["Start Len Winding (mm)"] <= clamped_winding_mm)
+        & (df["End Len Winding (mm)"] >= clamped_winding_mm)
+    ]
+    target_row = match_rows.iloc[0] if not match_rows.empty else df.iloc[-1]
+
+    target_turn = int(target_row["Turn"])
+    turn_length_mm = float(target_row["Turn Length (mm)"])
+    dist_into_turn_inner_mm = clamped_winding_mm - float(target_row["Start Len Winding (mm)"])
+    frac_from_inner = dist_into_turn_inner_mm / turn_length_mm
+    continuous_turn = (target_turn - 1) + frac_from_inner
+
+    if is_inner_ref:
+        dist_from_last_turn_mm = dist_into_turn_inner_mm
+        completed_turns = target_turn - 1
+        if abs(dist_from_last_turn_mm - turn_length_mm) < 1e-6:
+            completed_turns = target_turn
+            dist_from_last_turn_mm = 0.0
+    else:
+        dist_from_last_turn_mm = float(target_row["End Len Winding (mm)"]) - clamped_winding_mm
+        completed_turns = int(n_turns) - target_turn
+        if abs(dist_from_last_turn_mm - turn_length_mm) < 1e-6:
+            completed_turns = int(n_turns) - target_turn + 1
+            dist_from_last_turn_mm = 0.0
+
+    frac_from_last_turn = dist_from_last_turn_mm / turn_length_mm
+    angle_from_last_turn_deg = frac_from_last_turn * 360.0
+
+    if dist_from_last_turn_mm == 0.0:
+        dist_to_complete_turn_mm = 0.0
+        rem_frac_in_turn = 0.0
+    else:
+        dist_to_complete_turn_mm = turn_length_mm - dist_from_last_turn_mm
+        rem_frac_in_turn = 1.0 - frac_from_last_turn
 
 # --- KPI Summary Rows ---
-row1_c1, row1_c2, row1_c3, row1_c4 = st.columns(4)
-row1_c1.metric(
-    "Target Turn",
-    f"Turn {target_turn} / {n_turns}",
-    f"{completed_turns} complete turns from {ref_short}",
-)
-row1_c2.metric(
-    "From Last Complete Turn",
-    f"{dist_from_last_turn_mm:,.1f} mm",
-    f"{dist_from_last_turn_mm / 1000:.3f} m ({frac_from_last_turn * 100:.1f}%)",
-)
-row1_c3.metric(
-    "To Complete This Turn",
-    f"{dist_to_complete_turn_mm:,.1f} mm",
-    f"{dist_to_complete_turn_mm / 1000:.3f} m ({rem_frac_in_turn * 100:.1f}% left)",
-)
-row1_c4.metric(
-    "Angular Position in Turn",
-    f"{angle_from_last_turn_deg:.1f}°",
-    f"Turn length: {turn_length_mm:,.1f} mm",
-)
+if fault_zone == "winding":
+    row1_c1, row1_c2, row1_c3, row1_c4 = st.columns(4)
+    row1_c1.metric(
+        "Target Turn",
+        f"Turn {target_turn} / {n_turns}",
+        f"{completed_turns} complete turns from {ref_short}",
+    )
+    row1_c2.metric(
+        "From Last Complete Turn",
+        f"{dist_from_last_turn_mm:,.1f} mm",
+        f"{dist_from_last_turn_mm / 1000:.3f} m ({frac_from_last_turn * 100:.1f}%)",
+    )
+    row1_c3.metric(
+        "To Complete This Turn",
+        f"{dist_to_complete_turn_mm:,.1f} mm",
+        f"{dist_to_complete_turn_mm / 1000:.3f} m ({rem_frac_in_turn * 100:.1f}% left)",
+    )
+    row1_c4.metric(
+        "Angular Position in Turn",
+        f"{angle_from_last_turn_deg:.1f}°",
+        f"Turn length: {turn_length_mm:,.1f} mm",
+    )
+else:
+    lead_name = (
+        "Start / Inner Tail Lead"
+        if fault_zone == "inner_lead"
+        else "Finish / Outer Tail Lead"
+    )
+    st.warning(
+        f"**Location falls outside the winding — on the {lead_name}** "
+        f"({lead_dist_from_winding_mm:,.1f} mm outside the coil edge)."
+    )
+    row1_c1, row1_c2, row1_c3 = st.columns(3)
+    row1_c1.metric("Target Location", lead_name)
+    row1_c2.metric(
+        "Distance Outside Winding",
+        f"{lead_dist_from_winding_mm:,.1f} mm",
+        f"{lead_dist_from_winding_mm / 1000:.3f} m from coil edge",
+    )
+    row1_c3.metric(
+        "Lead Length Configured",
+        f"{inner_lead_mm if fault_zone == 'inner_lead' else outer_lead_mm:,d} mm",
+        "Outside spiral turns",
+    )
 
 row2_c1, row2_c2, row2_c3 = st.columns(3)
 row2_c1.metric(
-    f"Total Distance from {ref_short}",
+    f"Total Distance from {ref_short} Probe",
     f"{dist_from_ref_mm / 1000:.3f} m",
-    f"{dist_from_ref_mm:,.1f} mm",
+    f"{dist_from_ref_mm:,.1f} mm (incl. lead)",
 )
 row2_c2.metric(
     "Voltage Gradient",
@@ -200,7 +270,7 @@ row2_c2.metric(
 row2_c3.metric(
     "Total Conductor Length",
     f"{total_length_mm / 1000:.3f} m",
-    f"Pitch ≈ {radial_pitch:.2f} mm/turn",
+    f"Winding: {winding_length_mm / 1000:.3f} m · Leads: {(inner_lead_mm + outer_lead_mm) / 1000:.3f} m",
 )
 
 st.divider()
@@ -219,7 +289,7 @@ with viz_col1:
     x_all = r_all * np.cos(theta_all)
     y_all = r_all * np.sin(theta_all)
 
-    # Highlighted path from chosen tail to target
+    # Highlighted winding span from chosen tail to target
     if is_inner_ref:
         u_active = np.linspace(
             0, continuous_turn, max(2, int(continuous_turn * pts_per_turn) + 1)
@@ -235,7 +305,7 @@ with viz_col1:
     x_act = r_act * np.cos(theta_act)
     y_act = r_act * np.sin(theta_act)
 
-    # Exact target point
+    # Exact target point on spiral (or clamped to lead exit)
     theta_t = dir_sign * 2 * math.pi * continuous_turn
     r_t = r_inner + (r_outer - r_inner) * (continuous_turn / n_turns)
     x_t = r_t * np.cos(theta_t)
@@ -280,6 +350,34 @@ with viz_col1:
         )
     )
 
+    if fault_zone == "winding":
+        hover_text = (
+            f"<b>Target Location</b><br>"
+            f"Measured From: {measured_from}<br>"
+            f"Turn: {target_turn} ({frac_from_last_turn * 100:.1f}%)<br>"
+            f"Past Last Turn: {dist_from_last_turn_mm:,.1f} mm ({dist_from_last_turn_mm / 1000:.3f} m)<br>"
+            f"To Complete Turn: {dist_to_complete_turn_mm:,.1f} mm ({dist_to_complete_turn_mm / 1000:.3f} m)<br>"
+            f"Angle: {angle_from_last_turn_deg:.1f}°<br>"
+            f"Voltage Drop: {v_target:.6f} {unit}<br>"
+            f"Total Dist from {ref_short}: {dist_from_ref_mm:,.1f} mm<extra></extra>"
+        )
+        annot_text = (
+            f"<b>Turn {target_turn}</b> (+{dist_from_last_turn_mm:,.0f} mm / -{dist_to_complete_turn_mm:,.0f} mm left)<br>"
+            f"{v_target:.6f} {unit} · {angle_from_last_turn_deg:.0f}°"
+        )
+    else:
+        lead_label = "Inner Tail Lead" if fault_zone == "inner_lead" else "Outer Tail Lead"
+        hover_text = (
+            f"<b>Target Location: {lead_label}</b><br>"
+            f"Distance Outside Winding: {lead_dist_from_winding_mm:,.1f} mm<br>"
+            f"Voltage Drop: {v_target:.6f} {unit}<br>"
+            f"Total Dist from {ref_short}: {dist_from_ref_mm:,.1f} mm<extra></extra>"
+        )
+        annot_text = (
+            f"<b>On {lead_label}</b><br>"
+            f"{lead_dist_from_winding_mm:,.0f} mm outside winding · {v_target:.6f} {unit}"
+        )
+
     # Target location pin
     fig_spiral.add_trace(
         go.Scatter(
@@ -293,26 +391,14 @@ with viz_col1:
                 line=dict(width=3.5, color="#d62728"),
             ),
             name="Target Location",
-            hovertemplate=(
-                f"<b>Target Location</b><br>"
-                f"Measured From: {measured_from}<br>"
-                f"Turn: {target_turn} ({frac_from_last_turn * 100:.1f}%)<br>"
-                f"Past Last Turn: {dist_from_last_turn_mm:,.1f} mm ({dist_from_last_turn_mm / 1000:.3f} m)<br>"
-                f"To Complete Turn: {dist_to_complete_turn_mm:,.1f} mm ({dist_to_complete_turn_mm / 1000:.3f} m)<br>"
-                f"Angle: {angle_from_last_turn_deg:.1f}°<br>"
-                f"Voltage Drop: {v_target:.6f} {unit}<br>"
-                f"Total Dist from {ref_short}: {dist_from_ref_mm:,.1f} mm<extra></extra>"
-            ),
+            hovertemplate=hover_text,
         )
     )
 
     fig_spiral.add_annotation(
         x=x_t,
         y=y_t,
-        text=(
-            f"<b>Turn {target_turn}</b> (+{dist_from_last_turn_mm:,.0f} mm / -{dist_to_complete_turn_mm:,.0f} mm left)<br>"
-            f"{v_target:.6f} {unit} · {angle_from_last_turn_deg:.0f}°"
-        ),
+        text=annot_text,
         showarrow=True,
         arrowhead=2,
         arrowcolor="#d62728",
@@ -344,10 +430,14 @@ with viz_col2:
 
     if is_inner_ref:
         x_turns = [0] + df["Turn"].tolist()
-        y_volts = [0.0] + df[f"Cum. Voltage End ({unit})"].tolist()
+        y_volts = [float(inner_lead_mm) * v_per_mm] + df[
+            f"Cum. Voltage End ({unit})"
+        ].tolist()
     else:
         x_turns = [0] + df["Turn"].tolist()
-        y_volts = [v_total] + df[f"Cum. Voltage Start ({unit})"].tolist()
+        y_volts = [
+            (float(outer_lead_mm) + winding_length_mm) * v_per_mm
+        ] + df[f"Cum. Voltage Start ({unit})"].tolist()
 
     fig_profile.add_trace(
         go.Scatter(
@@ -366,11 +456,17 @@ with viz_col2:
         line_color="#d62728",
         annotation_text=f"{v_target:.6f} {unit}",
     )
+
+    vline_label = (
+        f"Turn {target_turn} (+{dist_from_last_turn_mm:,.0f} mm)"
+        if fault_zone == "winding"
+        else ("Inner Lead" if fault_zone == "inner_lead" else "Outer Lead")
+    )
     fig_profile.add_vline(
         x=continuous_turn,
         line_dash="dash",
         line_color="#d62728",
-        annotation_text=f"Turn {target_turn} (+{dist_from_last_turn_mm:,.0f} mm)",
+        annotation_text=vline_label,
     )
 
     fig_profile.add_trace(
@@ -385,7 +481,7 @@ with viz_col2:
 
     fig_profile.update_layout(
         xaxis_title="Turn Number (Start / Inner = 0 → Finish / Outer = N)",
-        yaxis_title=f"Voltage Drop from {ref_short} ({unit})",
+        yaxis_title=f"Voltage Drop from {ref_short} Probe ({unit})",
         height=310,
         margin=dict(l=20, r=20, t=25, b=20),
         showlegend=False,
@@ -394,7 +490,8 @@ with viz_col2:
 
     st.subheader("Voltage Drop per Individual Turn")
     bar_colors = [
-        "#d62728" if t == target_turn else "#6baed6" for t in df["Turn"]
+        "#d62728" if (fault_zone == "winding" and t == target_turn) else "#6baed6"
+        for t in df["Turn"]
     ]
     fig_bar = go.Figure(
         go.Bar(
@@ -422,18 +519,18 @@ display_df = df[
     [
         "Turn",
         "Turn Length (mm)",
-        "End Len Inner (mm)",
+        "End Len Winding (mm)",
         f"Turn Drop ({unit})",
         f"Cum. Voltage Start ({unit})",
         f"Cum. Voltage End ({unit})",
     ]
-].rename(columns={"End Len Inner (mm)": "Cum. Length from Inner Tail (mm)"})
+].rename(columns={"End Len Winding (mm)": "Cum. Winding Length from T1 (mm)"})
 
 st.dataframe(
     display_df.style.format(
         {
             "Turn Length (mm)": "{:,.2f}",
-            "Cum. Length from Inner Tail (mm)": "{:,.2f}",
+            "Cum. Winding Length from T1 (mm)": "{:,.2f}",
             f"Turn Drop ({unit})": "{:.6f}",
             f"Cum. Voltage Start ({unit})": "{:.6f}",
             f"Cum. Voltage End ({unit})": "{:.6f}",
@@ -441,7 +538,7 @@ st.dataframe(
     ).apply(
         lambda row: [
             "background-color: rgba(214, 39, 40, 0.18); font-weight: bold;"
-            if row["Turn"] == target_turn
+            if (fault_zone == "winding" and row["Turn"] == target_turn)
             else ""
             for _ in row
         ],
