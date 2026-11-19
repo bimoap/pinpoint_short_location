@@ -20,17 +20,17 @@ with st.sidebar:
     st.header("1. Coil Geometry")
     c_inner = st.number_input(
         "Inner Edge Circumference (mm)",
-        min_value=1.0,
-        value=8929.0,
-        step=1.0,
-        format="%.2f",
+        min_value=1,
+        value=8929,
+        step=1,
+        format="%d",
     )
     c_outer = st.number_input(
         "Outer Edge Circumference (mm)",
-        min_value=c_inner + 1.0,
-        value=11060.0,
-        step=1.0,
-        format="%.2f",
+        min_value=int(c_inner) + 1,
+        value=11060,
+        step=1,
+        format="%d",
     )
     n_turns = st.number_input(
         "Number of Turns",
@@ -53,20 +53,20 @@ with st.sidebar:
 
     v_total = st.number_input(
         f"Total Layer Voltage Drop ({unit})",
-        min_value=0.0001,
-        value=0.1250 if unit == "V" else 125.0,
-        step=0.0001 if unit == "V" else 0.1,
-        format="%.4f",
+        min_value=0.000001,
+        value=0.125000 if unit == "V" else 125.000000,
+        step=0.000001 if unit == "V" else 0.001000,
+        format="%.6f",
     )
 
-    default_v_target = 0.0124 if unit == "V" else 12.4
+    default_v_target = 0.012450 if unit == "V" else 12.450000
     v_target = st.number_input(
         f"Voltage Drop at Interested Location ({unit})",
         min_value=0.0,
         max_value=float(v_total),
         value=min(default_v_target, float(v_total)),
-        step=0.0001 if unit == "V" else 0.1,
-        format="%.4f",
+        step=0.000001 if unit == "V" else 0.001000,
+        format="%.6f",
     )
 
     winding_dir = st.radio(
@@ -77,16 +77,16 @@ with st.sidebar:
     )
 
 # --- Core Calculations ---
-delta_c = c_outer - c_inner
+delta_c = float(c_outer - c_inner)
 step_per_turn = delta_c / n_turns
-r_inner = c_inner / (2 * math.pi)
-r_outer = c_outer / (2 * math.pi)
+r_inner = float(c_inner) / (2 * math.pi)
+r_outer = float(c_outer) / (2 * math.pi)
 radial_pitch = step_per_turn / (2 * math.pi)
 
 rows = []
 cum_len = 0.0
 for k in range(1, int(n_turns) + 1):
-    length_k = c_inner + (k - 0.5) * step_per_turn
+    length_k = float(c_inner) + (k - 0.5) * step_per_turn
     start_len = cum_len
     cum_len += length_k
     rows.append(
@@ -194,7 +194,7 @@ row2_c1.metric(
 )
 row2_c2.metric(
     "Voltage Gradient",
-    f"{v_per_mm * 1000:.4f} {unit}/m",
+    f"{v_per_mm * 1000:.6f} {unit}/m",
     f"{v_per_mm:.6f} {unit}/mm",
 )
 row2_c3.metric(
@@ -262,7 +262,7 @@ with viz_col1:
             y=y_act,
             mode="lines",
             line=dict(color="#1f77b4", width=3.2),
-            name=f"Measured Span from {ref_short} (0 → {v_target:.4f} {unit})",
+            name=f"Measured Span from {ref_short} (0 → {v_target:.6f} {unit})",
             hoverinfo="skip",
         )
     )
@@ -300,7 +300,7 @@ with viz_col1:
                 f"Past Last Turn: {dist_from_last_turn_mm:,.1f} mm ({dist_from_last_turn_mm / 1000:.3f} m)<br>"
                 f"To Complete Turn: {dist_to_complete_turn_mm:,.1f} mm ({dist_to_complete_turn_mm / 1000:.3f} m)<br>"
                 f"Angle: {angle_from_last_turn_deg:.1f}°<br>"
-                f"Voltage Drop: {v_target:.4f} {unit}<br>"
+                f"Voltage Drop: {v_target:.6f} {unit}<br>"
                 f"Total Dist from {ref_short}: {dist_from_ref_mm:,.1f} mm<extra></extra>"
             ),
         )
@@ -311,7 +311,7 @@ with viz_col1:
         y=y_t,
         text=(
             f"<b>Turn {target_turn}</b> (+{dist_from_last_turn_mm:,.0f} mm / -{dist_to_complete_turn_mm:,.0f} mm left)<br>"
-            f"{v_target:.4f} {unit} · {angle_from_last_turn_deg:.0f}°"
+            f"{v_target:.6f} {unit} · {angle_from_last_turn_deg:.0f}°"
         ),
         showarrow=True,
         arrowhead=2,
@@ -364,7 +364,7 @@ with viz_col2:
         y=v_target,
         line_dash="dash",
         line_color="#d62728",
-        annotation_text=f"{v_target:.4f} {unit}",
+        annotation_text=f"{v_target:.6f} {unit}",
     )
     fig_profile.add_vline(
         x=continuous_turn,
@@ -403,7 +403,7 @@ with viz_col2:
             marker_color=bar_colors,
             hovertemplate=(
                 "Turn %{x}<br>"
-                f"Turn Drop: %{{y:.4f}} {unit}<extra></extra>"
+                f"Turn Drop: %{{y:.6f}} {unit}<extra></extra>"
             ),
         )
     )
@@ -434,9 +434,9 @@ st.dataframe(
         {
             "Turn Length (mm)": "{:,.2f}",
             "Cum. Length from Inner Tail (mm)": "{:,.2f}",
-            f"Turn Drop ({unit})": "{:.4f}",
-            f"Cum. Voltage Start ({unit})": "{:.4f}",
-            f"Cum. Voltage End ({unit})": "{:.4f}",
+            f"Turn Drop ({unit})": "{:.6f}",
+            f"Cum. Voltage Start ({unit})": "{:.6f}",
+            f"Cum. Voltage End ({unit})": "{:.6f}",
         }
     ).apply(
         lambda row: [
