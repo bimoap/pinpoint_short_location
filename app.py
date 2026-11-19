@@ -12,8 +12,109 @@ st.set_page_config(
 
 st.title("⚡ Single-Layer Pancake Coil — Fault Locator")
 st.caption(
-    "Locate the exact turn and conductor length along a spiral coil from a measured voltage drop."
+    "Locate the exact turn and conductor length along a spiral coil from measured voltage drops."
 )
+
+
+def locate_on_coil(
+    dist_from_inner_probe_mm: float,
+    df: pd.DataFrame,
+    inner_lead_mm: float,
+    winding_length_mm: float,
+    total_length_mm: float,
+    n_turns: int,
+    is_inner_ref: bool,
+) -> dict:
+    """Map a distance from the Start/Inner probe onto the winding or leads."""
+    d_clamped = max(0.0, min(total_length_mm, dist_from_inner_probe_mm))
+    d_winding = d_clamped - inner_lead_mm
+
+    if d_winding < -1e-6:
+        return {
+            "fault_zone": "inner_lead",
+            "target_turn": None,
+            "continuous_turn": 0.0,
+            "lead_dist_from_winding_mm": -d_winding,
+            "turn_length_mm": 0.0,
+            "dist_from_last_turn_mm": 0.0,
+            "dist_to_complete_turn_mm": 0.0,
+            "frac_from_last_turn": 0.0,
+            "rem_frac_in_turn": 0.0,
+            "angle_from_last_turn_deg": 0.0,
+            "completed_turns": 0 if is_inner_ref else n_turns,
+            "dist_from_inner_probe_mm": d_clamped,
+            "dist_from_ref_mm": d_clamped if is_inner_ref else (total_length_mm - d_clamped),
+        }
+
+    if d_winding > winding_length_mm + 1e-6:
+        return {
+            "fault_zone": "outer_lead",
+            "target_turn": None,
+            "continuous_turn": float(n_turns),
+            "lead_dist_from_winding_mm": d_winding - winding_length_mm,
+            "turn_length_mm": 0.0,
+            "dist_from_last_turn_mm": 0.0,
+            "dist_to_complete_turn_mm": 0.0,
+            "frac_from_last_turn": 0.0,
+            "rem_frac_in_turn": 0.0,
+            "angle_from_last_turn_deg": 0.0,
+            "completed_turns": n_turns if is_inner_ref else 0,
+            "dist_from_inner_probe_mm": d_clamped,
+            "dist_from_ref_mm": d_clamped if is_inner_ref else (total_length_mm - d_clamped),
+        }
+
+    clamped_w = max(0.0, min(winding_length_mm, d_winding))
+    match_rows = df[
+        (df["Start Len Winding (mm)"] <= clamped_w)
+        & (df["End Len Winding (mm)"] >= clamped_w)
+    ]
+    target_row = match_rows.iloc[0] if not match_rows.empty else df.iloc[-1]
+
+    target_turn = int(target_row["Turn"])
+    turn_length_mm = float(target_row["Turn Length (mm)"])
+    dist_into_turn_inner_mm = clamped_w - float(target_row["Start Len Winding (mm)"])
+    frac_from_inner = dist_into_turn_inner_mm / turn_length_mm
+    continuous_turn = (target_turn - 1) + frac_from_inner
+
+    if is_inner_ref:
+        dist_from_last_turn_mm = dist_into_turn_inner_mm
+        completed_turns = target_turn - 1
+        if abs(dist_from_last_turn_mm - turn_length_mm) < 1e-6:
+            completed_turns = target_turn
+            dist_from_last_turn_mm = 0.0
+    else:
+        dist_from_last_turn_mm = float(target_row["End Len Winding (mm)"]) - clamped_w
+        completed_turns = n_turns - target_turn
+        if abs(dist_from_last_turn_mm - turn_length_mm) < 1e-6:
+            completed_turns = n_turns - target_turn + 1
+            dist_from_last_turn_mm = 0.0
+
+    frac_from_last_turn = dist_from_last_turn_mm / turn_length_mm
+    angle_from_last_turn_deg = frac_from_last_turn * 360.0
+
+    if dist_from_last_turn_mm == 0.0:
+        dist_to_complete_turn_mm = 0.0
+        rem_frac_in_turn = 0.0
+    else:
+        dist_to_complete_turn_mm = turn_length_mm - dist_from_last_turn_mm
+        rem_frac_in_turn = 1.0 - frac_from_last_turn
+
+    return {
+        "fault_zone": "winding",
+        "target_turn": target_turn,
+        "continuous_turn": continuous_turn,
+        "lead_dist_from_winding_mm": 0.0,
+        "turn_length_mm": turn_length_mm,
+        "dist_from_last_turn_mm": dist_from_last_turn_mm,
+        "dist_to_complete_turn_mm": dist_to_complete_turn_mm,
+        "frac_from_last_turn": frac_from_last_turn,
+        "rem_frac_in_turn": rem_frac_in_turn,
+        "angle_from_last_turn_deg": angle_from_last_turn_deg,
+        "completed_turns": completed_turns,
+        "dist_from_inner_probe_mm": d_clamped,
+        "dist_from_ref_mm": d_clamped if is_inner_ref else (total_length_mm - d_clamped),
+    }
+
 
 # --- Sidebar Inputs ---
 with st.sidebar:
@@ -58,14 +159,12 @@ with st.sidebar:
 
     st.divider()
     st.header("2. Voltage Drop Measurements")
-    unit = st.radio("Voltage Unit", ["V", "mV"], horizontal=True)
-
-    measured_from = st.radio(
-        "Voltage Drop Measured From",
-        ["Start / Inner Tail", "Finish / Outer Tail"],
-        index=1,
-        help="Select which tail of the coil your 0 V reference probe is connected to.",
+    mode = st.radio(
+        "Measurement Mode",
+        ["Single-Probe", "Dual-Probe Cross-Check"],
+        horizontal=True,
     )
+    unit = st.radio("Voltage Unit", ["V", "mV"], horizontal=True)
 
     v_total = st.number_input(
         f"Total Layer Voltage Drop ({unit})",
@@ -75,15 +174,45 @@ with st.sidebar:
         format="%.6f",
     )
 
-    default_v_target = 0.012450 if unit == "V" else 12.450000
-    v_target = st.number_input(
-        f"Voltage Drop at Interested Location ({unit})",
-        min_value=0.0,
-        max_value=float(v_total),
-        value=min(default_v_target, float(v_total)),
-        step=0.000001 if unit == "V" else 0.001000,
-        format="%.6f",
-    )
+    if mode == "Single-Probe":
+        measured_from = st.radio(
+            "Voltage Drop Measured From",
+            ["Start / Inner Tail", "Finish / Outer Tail"],
+            index=1,
+            help="Select which tail of the coil your 0 V reference probe is connected to.",
+        )
+        default_v_target = 0.012450 if unit == "V" else 12.450000
+        v_target = st.number_input(
+            f"Voltage Drop at Interested Location ({unit})",
+            min_value=0.0,
+            max_value=float(v_total),
+            value=min(default_v_target, float(v_total)),
+            step=0.000001 if unit == "V" else 0.001000,
+            format="%.6f",
+        )
+    else:
+        default_v_outer = 0.012450 if unit == "V" else 12.450000
+        default_v_inner = max(0.0, float(v_total) - default_v_outer)
+        v_from_inner = st.number_input(
+            f"Voltage Drop from Start / Inner Tail ({unit})",
+            min_value=0.0,
+            value=default_v_inner,
+            step=0.000001 if unit == "V" else 0.001000,
+            format="%.6f",
+        )
+        v_from_outer = st.number_input(
+            f"Voltage Drop from Finish / Outer Tail ({unit})",
+            min_value=0.0,
+            value=min(default_v_outer, float(v_total)),
+            step=0.000001 if unit == "V" else 0.001000,
+            format="%.6f",
+        )
+        measured_from = st.radio(
+            "Display Turn Distances Relative To",
+            ["Start / Inner Tail", "Finish / Outer Tail"],
+            index=1,
+            help="Controls whether 'From Last Complete Turn' is counted from the Inner or Outer tail.",
+        )
 
     winding_dir = st.radio(
         "Visual Winding Direction (from Start / Inner Tail)",
@@ -92,7 +221,7 @@ with st.sidebar:
         horizontal=True,
     )
 
-# --- Core Calculations ---
+# --- Core Geometry Calculations ---
 delta_c = float(c_outer - c_inner)
 step_per_turn = delta_c / n_turns
 r_inner = float(c_inner) / (2 * math.pi)
@@ -131,8 +260,6 @@ if is_inner_ref:
     df[f"Cum. Voltage End ({unit})"] = (
         float(inner_lead_mm) + df["End Len Winding (mm)"]
     ) * v_per_mm
-    dist_from_ref_mm = (v_target / v_total) * total_length_mm
-    dist_from_inner_probe_mm = dist_from_ref_mm
 else:
     df[f"Cum. Voltage Start ({unit})"] = (
         float(outer_lead_mm) + winding_length_mm - df["End Len Winding (mm)"]
@@ -140,81 +267,138 @@ else:
     df[f"Cum. Voltage End ({unit})"] = (
         float(outer_lead_mm) + winding_length_mm - df["Start Len Winding (mm)"]
     ) * v_per_mm
+
+# --- Mode-Specific Fault Location ---
+if mode == "Single-Probe":
     dist_from_ref_mm = (v_target / v_total) * total_length_mm
-    dist_from_inner_probe_mm = total_length_mm - dist_from_ref_mm
-
-# Clamp floating point edge cases
-dist_from_inner_probe_mm = max(0.0, min(total_length_mm, dist_from_inner_probe_mm))
-dist_in_winding_from_inner_mm = dist_from_inner_probe_mm - float(inner_lead_mm)
-
-# Determine whether fault is on Inner Lead, Outer Lead, or inside Winding
-if dist_in_winding_from_inner_mm < -1e-6:
-    fault_zone = "inner_lead"
-    target_turn = None
-    continuous_turn = 0.0
-    lead_dist_from_winding_mm = -dist_in_winding_from_inner_mm
-    turn_length_mm = 0.0
-    dist_from_last_turn_mm = 0.0
-    dist_to_complete_turn_mm = 0.0
-    frac_from_last_turn = 0.0
-    rem_frac_in_turn = 0.0
-    angle_from_last_turn_deg = 0.0
-    completed_turns = 0 if is_inner_ref else int(n_turns)
-elif dist_in_winding_from_inner_mm > winding_length_mm + 1e-6:
-    fault_zone = "outer_lead"
-    target_turn = None
-    continuous_turn = float(n_turns)
-    lead_dist_from_winding_mm = dist_in_winding_from_inner_mm - winding_length_mm
-    turn_length_mm = 0.0
-    dist_from_last_turn_mm = 0.0
-    dist_to_complete_turn_mm = 0.0
-    frac_from_last_turn = 0.0
-    rem_frac_in_turn = 0.0
-    angle_from_last_turn_deg = 0.0
-    completed_turns = int(n_turns) if is_inner_ref else 0
+    dist_from_inner_probe_mm = (
+        dist_from_ref_mm if is_inner_ref else (total_length_mm - dist_from_ref_mm)
+    )
+    loc = locate_on_coil(
+        dist_from_inner_probe_mm,
+        df,
+        float(inner_lead_mm),
+        winding_length_mm,
+        total_length_mm,
+        int(n_turns),
+        is_inner_ref,
+    )
+    v_display_target = v_target
 else:
-    fault_zone = "winding"
-    clamped_winding_mm = max(0.0, min(winding_length_mm, dist_in_winding_from_inner_mm))
-    match_rows = df[
-        (df["Start Len Winding (mm)"] <= clamped_winding_mm)
-        & (df["End Len Winding (mm)"] >= clamped_winding_mm)
-    ]
-    target_row = match_rows.iloc[0] if not match_rows.empty else df.iloc[-1]
+    v_sum = v_from_inner + v_from_outer
+    v_diff = v_sum - v_total
+    err_pct = (abs(v_diff) / v_total) * 100.0
 
-    target_turn = int(target_row["Turn"])
-    turn_length_mm = float(target_row["Turn Length (mm)"])
-    dist_into_turn_inner_mm = clamped_winding_mm - float(target_row["Start Len Winding (mm)"])
-    frac_from_inner = dist_into_turn_inner_mm / turn_length_mm
-    continuous_turn = (target_turn - 1) + frac_from_inner
+    # Individual probe estimates (mapped to distance from Inner probe)
+    d_inner_est_mm = (v_from_inner / v_total) * total_length_mm
+    d_outer_est_mm = total_length_mm - (v_from_outer / v_total) * total_length_mm
+    spread_mm = abs(d_inner_est_mm - d_outer_est_mm)
 
-    if is_inner_ref:
-        dist_from_last_turn_mm = dist_into_turn_inner_mm
-        completed_turns = target_turn - 1
-        if abs(dist_from_last_turn_mm - turn_length_mm) < 1e-6:
-            completed_turns = target_turn
-            dist_from_last_turn_mm = 0.0
+    # Ratiometric best estimate (cancels uniform current/temp drift)
+    if v_sum > 0:
+        d_best_mm = (v_from_inner / v_sum) * total_length_mm
     else:
-        dist_from_last_turn_mm = float(target_row["End Len Winding (mm)"]) - clamped_winding_mm
-        completed_turns = int(n_turns) - target_turn
-        if abs(dist_from_last_turn_mm - turn_length_mm) < 1e-6:
-            completed_turns = int(n_turns) - target_turn + 1
-            dist_from_last_turn_mm = 0.0
+        d_best_mm = 0.0
 
-    frac_from_last_turn = dist_from_last_turn_mm / turn_length_mm
-    angle_from_last_turn_deg = frac_from_last_turn * 360.0
+    loc = locate_on_coil(
+        d_best_mm,
+        df,
+        float(inner_lead_mm),
+        winding_length_mm,
+        total_length_mm,
+        int(n_turns),
+        is_inner_ref,
+    )
+    loc_inner_est = locate_on_coil(
+        d_inner_est_mm,
+        df,
+        float(inner_lead_mm),
+        winding_length_mm,
+        total_length_mm,
+        int(n_turns),
+        is_inner_ref,
+    )
+    loc_outer_est = locate_on_coil(
+        d_outer_est_mm,
+        df,
+        float(inner_lead_mm),
+        winding_length_mm,
+        total_length_mm,
+        int(n_turns),
+        is_inner_ref,
+    )
+    v_display_target = (
+        (d_best_mm / total_length_mm) * v_total
+        if is_inner_ref
+        else ((total_length_mm - d_best_mm) / total_length_mm) * v_total
+    )
 
-    if dist_from_last_turn_mm == 0.0:
-        dist_to_complete_turn_mm = 0.0
-        rem_frac_in_turn = 0.0
+# Unpack primary location
+fault_zone = loc["fault_zone"]
+target_turn = loc["target_turn"]
+continuous_turn = loc["continuous_turn"]
+turn_length_mm = loc["turn_length_mm"]
+dist_from_last_turn_mm = loc["dist_from_last_turn_mm"]
+dist_to_complete_turn_mm = loc["dist_to_complete_turn_mm"]
+frac_from_last_turn = loc["frac_from_last_turn"]
+rem_frac_in_turn = loc["rem_frac_in_turn"]
+angle_from_last_turn_deg = loc["angle_from_last_turn_deg"]
+completed_turns = loc["completed_turns"]
+dist_from_ref_mm = loc["dist_from_ref_mm"]
+lead_dist_from_winding_mm = loc["lead_dist_from_winding_mm"]
+
+# --- Dual-Probe Cross-Check Banner & Metrics ---
+if mode == "Dual-Probe Cross-Check":
+    st.subheader("Dual-Probe Cross-Check Diagnostics")
+    if err_pct <= 1.0:
+        st.success(
+            f"**Cross-Check Passed** — Sum matches total layer voltage within **{err_pct:.2f}%** "
+            f"(ΔV = {v_diff:+.6f} {unit}, position spread = {spread_mm:,.1f} mm)."
+        )
+    elif err_pct <= 3.0:
+        st.warning(
+            f"**Minor Discrepancy ({err_pct:.2f}%)** — ΔV = {v_diff:+.6f} {unit} "
+            f"(position spread = {spread_mm:,.1f} mm). Check probe contact resistance or minor current/temperature drift."
+        )
     else:
-        dist_to_complete_turn_mm = turn_length_mm - dist_from_last_turn_mm
-        rem_frac_in_turn = 1.0 - frac_from_last_turn
+        hint = (
+            "Sum > Total usually indicates extra probe/contact resistance or current drift."
+            if v_diff > 0
+            else "Sum < Total may indicate bypassed turns (broad short) or current drop between readings."
+        )
+        st.error(
+            f"**Significant Discrepancy ({err_pct:.2f}%)** — ΔV = {v_diff:+.6f} {unit} "
+            f"(position spread = {spread_mm:,.1f} mm). {hint}"
+        )
+
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    cc1.metric(
+        "Sum (V_inner + V_outer)",
+        f"{v_sum:.6f} {unit}",
+        f"Total: {v_total:.6f} {unit}",
+    )
+    cc2.metric(
+        "Voltage Discrepancy (ΔV)",
+        f"{v_diff:+.6f} {unit}",
+        f"{err_pct:.2f}% of total",
+    )
+    cc3.metric(
+        "Position Spread (Uncertainty)",
+        f"±{spread_mm / 2:,.1f} mm",
+        f"Total span: {spread_mm:,.1f} mm",
+    )
+    cc4.metric(
+        "Ratiometric Split",
+        f"{(v_from_inner / v_sum * 100) if v_sum > 0 else 0:.2f}% / {(v_from_outer / v_sum * 100) if v_sum > 0 else 0:.2f}%",
+        "Inner % / Outer %",
+    )
+    st.divider()
 
 # --- KPI Summary Rows ---
 if fault_zone == "winding":
     row1_c1, row1_c2, row1_c3, row1_c4 = st.columns(4)
     row1_c1.metric(
-        "Target Turn",
+        "Target Turn" + (" (Ratiometric)" if mode == "Dual-Probe Cross-Check" else ""),
         f"Turn {target_turn} / {n_turns}",
         f"{completed_turns} complete turns from {ref_short}",
     )
@@ -305,7 +489,7 @@ with viz_col1:
     x_act = r_act * np.cos(theta_act)
     y_act = r_act * np.sin(theta_act)
 
-    # Exact target point on spiral (or clamped to lead exit)
+    # Exact target point on spiral
     theta_t = dir_sign * 2 * math.pi * continuous_turn
     r_t = r_inner + (r_outer - r_inner) * (continuous_turn / n_turns)
     x_t = r_t * np.cos(theta_t)
@@ -332,10 +516,52 @@ with viz_col1:
             y=y_act,
             mode="lines",
             line=dict(color="#1f77b4", width=3.2),
-            name=f"Measured Span from {ref_short} (0 → {v_target:.6f} {unit})",
+            name=f"Span from {ref_short} (0 → {v_display_target:.6f} {unit})",
             hoverinfo="skip",
         )
     )
+
+    # Dual-Probe individual estimates & uncertainty band
+    if mode == "Dual-Probe Cross-Check" and spread_mm > 1.0:
+        u_in = loc_inner_est["continuous_turn"]
+        u_out = loc_outer_est["continuous_turn"]
+        u_min, u_max = min(u_in, u_out), max(u_in, u_out)
+
+        u_band = np.linspace(u_min, u_max, max(2, int((u_max - u_min) * pts_per_turn) + 2))
+        th_band = dir_sign * 2 * math.pi * u_band
+        r_band = r_inner + (r_outer - r_inner) * (u_band / n_turns)
+        fig_spiral.add_trace(
+            go.Scatter(
+                x=r_band * np.cos(th_band),
+                y=r_band * np.sin(th_band),
+                mode="lines",
+                line=dict(color="rgba(255, 127, 14, 0.85)", width=6),
+                name=f"Uncertainty Band ({spread_mm:,.0f} mm)",
+                hoverinfo="skip",
+            )
+        )
+
+        # Individual estimate markers
+        for est_label, est_loc, est_color in [
+            ("Inner-Probe Est.", loc_inner_est, "#2ca02c"),
+            ("Outer-Probe Est.", loc_outer_est, "#9467bd"),
+        ]:
+            th_e = dir_sign * 2 * math.pi * est_loc["continuous_turn"]
+            r_e = r_inner + (r_outer - r_inner) * (est_loc["continuous_turn"] / n_turns)
+            fig_spiral.add_trace(
+                go.Scatter(
+                    x=[r_e * np.cos(th_e)],
+                    y=[r_e * np.sin(th_e)],
+                    mode="markers",
+                    marker=dict(size=10, color=est_color, symbol="diamond"),
+                    name=est_label,
+                    hovertemplate=(
+                        f"<b>{est_label}</b><br>"
+                        f"Turn: {est_loc['target_turn'] or est_loc['fault_zone']}<br>"
+                        f"Dist from {ref_short}: {est_loc['dist_from_ref_mm']:,.1f} mm<extra></extra>"
+                    ),
+                )
+            )
 
     # Start / Inner & Finish / Outer tail markers
     fig_spiral.add_trace(
@@ -352,30 +578,29 @@ with viz_col1:
 
     if fault_zone == "winding":
         hover_text = (
-            f"<b>Target Location</b><br>"
-            f"Measured From: {measured_from}<br>"
+            f"<b>Target Location{' (Ratiometric)' if mode == 'Dual-Probe Cross-Check' else ''}</b><br>"
             f"Turn: {target_turn} ({frac_from_last_turn * 100:.1f}%)<br>"
             f"Past Last Turn: {dist_from_last_turn_mm:,.1f} mm ({dist_from_last_turn_mm / 1000:.3f} m)<br>"
             f"To Complete Turn: {dist_to_complete_turn_mm:,.1f} mm ({dist_to_complete_turn_mm / 1000:.3f} m)<br>"
             f"Angle: {angle_from_last_turn_deg:.1f}°<br>"
-            f"Voltage Drop: {v_target:.6f} {unit}<br>"
+            f"Voltage Drop: {v_display_target:.6f} {unit}<br>"
             f"Total Dist from {ref_short}: {dist_from_ref_mm:,.1f} mm<extra></extra>"
         )
         annot_text = (
             f"<b>Turn {target_turn}</b> (+{dist_from_last_turn_mm:,.0f} mm / -{dist_to_complete_turn_mm:,.0f} mm left)<br>"
-            f"{v_target:.6f} {unit} · {angle_from_last_turn_deg:.0f}°"
+            f"{v_display_target:.6f} {unit} · {angle_from_last_turn_deg:.0f}°"
         )
     else:
         lead_label = "Inner Tail Lead" if fault_zone == "inner_lead" else "Outer Tail Lead"
         hover_text = (
             f"<b>Target Location: {lead_label}</b><br>"
             f"Distance Outside Winding: {lead_dist_from_winding_mm:,.1f} mm<br>"
-            f"Voltage Drop: {v_target:.6f} {unit}<br>"
+            f"Voltage Drop: {v_display_target:.6f} {unit}<br>"
             f"Total Dist from {ref_short}: {dist_from_ref_mm:,.1f} mm<extra></extra>"
         )
         annot_text = (
             f"<b>On {lead_label}</b><br>"
-            f"{lead_dist_from_winding_mm:,.0f} mm outside winding · {v_target:.6f} {unit}"
+            f"{lead_dist_from_winding_mm:,.0f} mm outside winding · {v_display_target:.6f} {unit}"
         )
 
     # Target location pin
@@ -451,10 +676,10 @@ with viz_col2:
     )
 
     fig_profile.add_hline(
-        y=v_target,
+        y=v_display_target,
         line_dash="dash",
         line_color="#d62728",
-        annotation_text=f"{v_target:.6f} {unit}",
+        annotation_text=f"{v_display_target:.6f} {unit}",
     )
 
     vline_label = (
@@ -472,7 +697,7 @@ with viz_col2:
     fig_profile.add_trace(
         go.Scatter(
             x=[continuous_turn],
-            y=[v_target],
+            y=[v_display_target],
             mode="markers",
             marker=dict(size=12, color="#d62728"),
             name="Interested Location",
