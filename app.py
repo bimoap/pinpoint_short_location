@@ -5,12 +5,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
-    page_title="Coil Voltage Drop Locator",
+    page_title="Single-Layer Pancake Coil — Fault Locator",
     page_icon="⚡",
     layout="wide",
 )
 
-st.title("⚡ Single-Layer Pancake Coil — Voltage Drop Locator")
+st.title("⚡ Single-Layer Pancake Coil — Fault Locator")
 st.caption(
     "Locate the exact turn and conductor length along a spiral coil from a measured voltage drop."
 )
@@ -452,6 +452,6 @@ csv_bytes = display_df.to_csv(index=False).encode("utf-8")
 st.download_button(
     label="Download Table as CSV",
     data=csv_bytes,
-    file_name="coil_voltage_drop_table.csv",
+    file_name="coil_fault_location_table.csv",
     mime="text/csv",
 )
