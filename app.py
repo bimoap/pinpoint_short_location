@@ -149,19 +149,32 @@ else:
 frac_from_last_turn = dist_from_last_turn_mm / turn_length_mm
 angle_from_last_turn_deg = frac_from_last_turn * 360.0
 
+# Remaining length from interested point to complete that turn
+if dist_from_last_turn_mm == 0.0:
+    dist_to_complete_turn_mm = 0.0
+    rem_frac_in_turn = 0.0
+else:
+    dist_to_complete_turn_mm = turn_length_mm - dist_from_last_turn_mm
+    rem_frac_in_turn = 1.0 - frac_from_last_turn
+
 # --- KPI Summary Rows ---
-row1_c1, row1_c2, row1_c3 = st.columns(3)
+row1_c1, row1_c2, row1_c3, row1_c4 = st.columns(4)
 row1_c1.metric(
     "Target Turn",
     f"Turn {target_turn} / {n_turns}",
     f"{completed_turns} complete turns from ref lead",
 )
 row1_c2.metric(
-    "Length from Last Complete Turn",
+    "From Last Complete Turn",
     f"{dist_from_last_turn_mm:,.1f} mm",
-    f"{dist_from_last_turn_mm / 1000:.3f} m ({frac_from_last_turn * 100:.1f}% of turn)",
+    f"{dist_from_last_turn_mm / 1000:.3f} m ({frac_from_last_turn * 100:.1f}%)",
 )
 row1_c3.metric(
+    "To Complete This Turn",
+    f"{dist_to_complete_turn_mm:,.1f} mm",
+    f"{dist_to_complete_turn_mm / 1000:.3f} m ({rem_frac_in_turn * 100:.1f}% left)",
+)
+row1_c4.metric(
     "Angular Position in Turn",
     f"{angle_from_last_turn_deg:.1f}°",
     f"Turn length: {turn_length_mm:,.1f} mm",
@@ -278,6 +291,7 @@ with viz_col1:
                 f"<b>Target Location</b><br>"
                 f"Turn: {target_turn} ({frac_from_last_turn * 100:.1f}%)<br>"
                 f"Past Last Turn: {dist_from_last_turn_mm:,.1f} mm ({dist_from_last_turn_mm / 1000:.3f} m)<br>"
+                f"To Complete Turn: {dist_to_complete_turn_mm:,.1f} mm ({dist_to_complete_turn_mm / 1000:.3f} m)<br>"
                 f"Angle: {angle_from_last_turn_deg:.1f}°<br>"
                 f"Voltage Drop: {v_target:.4f} {unit}<br>"
                 f"Total Dist from Ref: {dist_from_ref_mm:,.1f} mm<extra></extra>"
@@ -289,7 +303,7 @@ with viz_col1:
         x=x_t,
         y=y_t,
         text=(
-            f"<b>Turn {target_turn}</b> (+{dist_from_last_turn_mm:,.0f} mm)<br>"
+            f"<b>Turn {target_turn}</b> (+{dist_from_last_turn_mm:,.0f} mm / -{dist_to_complete_turn_mm:,.0f} mm left)<br>"
             f"{v_target:.3f} {unit} · {angle_from_last_turn_deg:.0f}°"
         ),
         showarrow=True,
